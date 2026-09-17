@@ -33,6 +33,8 @@ MOMENTUM_BANDS = [(lo, lo + 50) for lo in range(200, 650, 50)] + [
 ]
 PARTICLE_NAMES = ["electron", "muon", "pion", "proton"]
 
+HC_BIAS_VALUE = 500
+
 # Beam divergence parameters
 BEAM_DIVERGENCE_MRAD = 1.0  # Beam divergence in mrad
 DISTANCE_WINDOW_TO_T5_M = (
@@ -114,7 +116,7 @@ def get_T5_resolution_cm(T5_config_path: str) -> tuple[float, float]:
     
 def simulate_mcs(
     run_number: int, particle_name: str, momentum_MeV_c: float, HC_veto: bool = True
-) -> float:
+) -> tuple[float, float]:
     _stdout = sys.stdout
     sys.stdout = io.StringIO()
     detectors_list = layers.return_built_beam(run_number=run_number)
@@ -123,11 +125,10 @@ def simulate_mcs(
     beamline.set_particle(part)
     beamline.create_setup(detectors_list)
     try:
-        # variance = beamline.get_final_variance()
-        variance = beamline.get_final_variance(HC_veto=HC_veto)
+        width_variance, angle_variance = beamline.get_final_variance(HC_veto=HC_veto)
     finally:
         sys.stdout = _stdout
-    return math.sqrt(variance)
+    return math.sqrt(width_variance), math.sqrt(angle_variance)
 
 
 def initial_sigma(sigma_meas_cm: float, sigma_mcs_cm: float) -> Optional[float]:
@@ -635,10 +636,10 @@ def plot_MCS_data_comparison(
         ax.set_ylim(y_limits)
 
     if plot_bias_line:
-        ax.axvline(x=540, color="gray", linestyle=":", linewidth=1.5)
+        ax.axvline(x=HC_BIAS_VALUE, color="gray", linestyle=":", linewidth=1.5)
         # Keep x in data coordinates while y follows the current axes height.
         ax.text(
-            540,
+            HC_BIAS_VALUE,
             0.98,
             "  trigger bias below",
             transform=ax.get_xaxis_transform(),
@@ -673,6 +674,111 @@ def plot_MCS_data_comparison(
         fig.savefig(fig_output_path, dpi=150)
         saved_paths.append(str(fig_output_path))
     print(f"Plot saved to: {', '.join(saved_paths)}")
+    plt.close(fig)
+
+
+def plot_divergence_data(
+    rows: list[dict],
+    output_path: str,
+    plot_bias_line: bool = True,
+    mcs_correction_mode: str = "no_hc",
+    zoom: bool = False,
+    filename: str = "beam_divergence_vs_momentum.png",
+):
+    """Plot simulated beam divergence as a function of beam momentum."""
+    if mcs_correction_mode not in {"both", "with_hc", "no_hc"}:
+        raise ValueError(
+            "mcs_correction_mode must be one of: 'both', 'with_hc', 'no_hc'"
+        )
+
+    band_width = 50  # MeV/c, matching plot_MCS_data_comparison
+    seen_bands: dict[int, dict] = {}
+    for row in rows:
+        band_index = int(row["p_nom"] // band_width)
+        if band_index not in seen_bands:
+            seen_bands[band_index] = row
+    binned_rows = sorted(seen_bands.values(), key=lambda row: row["p_nom"])
+
+    print(
+        f"Divergence plot runs ({mcs_correction_mode}, {'zoomed' if zoom else 'unzoomed'}):"
+    )
+    for row in binned_rows:
+        print(f"  run {row['run']}: {row['p_nom']:.1f} MeV/c")
+
+    colours = {
+        "electron": "#e6194b",
+        "muon": "#4363d8",
+        "pion": "#f58231",
+        "proton": "#3cb44b",
+    }
+    labels = {
+        "electron": "electron",
+        "muon": "muon",
+        "pion": "pion",
+        "proton": "proton",
+    }
+
+    fig, ax = plt.subplots(figsize=(12, 8))
+    for particle_name in PARTICLE_NAMES:
+        series = []
+        if mcs_correction_mode in {"both", "with_hc"}:
+            series.append((True, "-", "with HC correction"))
+        if mcs_correction_mode in {"both", "no_hc"}:
+            series.append((False, "--", "without HC correction"))
+
+        for hc_veto, linestyle, suffix in series:
+            key = f"divergence_{'hc' if hc_veto else 'nohc'}_{particle_name}"
+            points = [
+                (row["p_nom"], row[key])
+                for row in binned_rows
+                if row.get(key) is not None
+            ]
+            if not points:
+                continue
+            momenta, divergences = zip(*sorted(points))
+            ax.plot(
+                momenta,
+                divergences,
+                color=colours[particle_name],
+                linestyle=linestyle,
+                marker="o" if hc_veto else "x",
+                linewidth=1.8,
+                markersize=5,
+                label=f"{labels[particle_name]} ({suffix})",
+            )
+
+    ax.set_xlabel("Nominal beam momentum (MeV/c)", fontsize=20)
+    ax.set_ylabel("Estimated beam MCS divergence (mrad)", fontsize=20)
+    ax.set_title("Simulated beam divergence vs beam momentum", fontsize=24, pad=10)
+    if zoom:
+        ax.set_ylim(top=50)
+
+    if plot_bias_line:
+        ax.axvline(x=HC_BIAS_VALUE, color="gray", linestyle=":", linewidth=1.5)
+        ax.text(
+            HC_BIAS_VALUE,
+            0.98,
+            "  trigger bias below",
+            transform=ax.get_xaxis_transform(),
+            color="gray",
+            fontsize=16,
+            va="top",
+            ha="left",
+            rotation=90,
+        )
+
+    ax.xaxis.set_minor_locator(ticker.AutoMinorLocator())
+    ax.yaxis.set_minor_locator(ticker.AutoMinorLocator())
+    ax.grid(which="major", linestyle="--", linewidth=0.5, alpha=0.6)
+    ax.grid(which="minor", linestyle=":", linewidth=0.3, alpha=0.4)
+    ax.tick_params(axis="x", labelsize=16)
+    ax.tick_params(axis="y", labelsize=16)
+    ax.legend(loc="best", fontsize=12, framealpha=0.8)
+    fig.tight_layout()
+
+    output_file = Path(output_path) / filename
+    fig.savefig(output_file, dpi=150)
+    print(f"Divergence plot saved to: {output_file}")
     plt.close(fig)
 
 
@@ -1101,18 +1207,26 @@ def main():
             "uncertainty_mcs_nohc_mu": None,
             "uncertainty_mcs_nohc_pi": None,
             "uncertainty_mcs_nohc_proton": None,
+            "divergence_hc_electron": None,
+            "divergence_hc_muon": None,
+            "divergence_hc_pion": None,
+            "divergence_hc_proton": None,
+            "divergence_nohc_electron": None,
+            "divergence_nohc_muon": None,
+            "divergence_nohc_pion": None,
+            "divergence_nohc_proton": None,
         }
 
         # Calculate initial sigma_y using electron MCS estimation only
         try:
-            sigma_mcs_e = simulate_mcs(rn, "electron", momentum, HC_veto=True)
-            sigma_mcs_mu = simulate_mcs(rn, "muon", momentum, HC_veto=True)
-            sigma_mcs_pi = simulate_mcs(rn, "pion", momentum, HC_veto=True)
-            sigma_mcs_proton = simulate_mcs(rn, "proton", momentum, HC_veto=True)
-            sigma_mcs_nohc_e = simulate_mcs(rn, "electron", momentum, HC_veto=False)
-            sigma_mcs_nohc_mu = simulate_mcs(rn, "muon", momentum, HC_veto=False)
-            sigma_mcs_nohc_pi = simulate_mcs(rn, "pion", momentum, HC_veto=False)
-            sigma_mcs_nohc_proton = simulate_mcs(rn, "proton", momentum, HC_veto=False)
+            sigma_mcs_e, divergence_e = simulate_mcs(rn, "electron", momentum, HC_veto=True)
+            sigma_mcs_mu, divergence_mu = simulate_mcs(rn, "muon", momentum, HC_veto=True)
+            sigma_mcs_pi, divergence_pi = simulate_mcs(rn, "pion", momentum, HC_veto=True)
+            sigma_mcs_proton, divergence_proton = simulate_mcs(rn, "proton", momentum, HC_veto=True)
+            sigma_mcs_nohc_e, divergence_nohc_e = simulate_mcs(rn, "electron", momentum, HC_veto=False)
+            sigma_mcs_nohc_mu, divergence_nohc_mu = simulate_mcs(rn, "muon", momentum, HC_veto=False)
+            sigma_mcs_nohc_pi, divergence_nohc_pi = simulate_mcs(rn, "pion", momentum, HC_veto=False)
+            sigma_mcs_nohc_proton, divergence_nohc_proton = simulate_mcs(rn, "proton", momentum, HC_veto=False)
             uncertainty_mcs_e = calculate_highland_systematic_uncertainty(sigma_mcs_e)
             uncertainty_mcs_mu = calculate_highland_systematic_uncertainty(sigma_mcs_mu)
             uncertainty_mcs_pi = calculate_highland_systematic_uncertainty(sigma_mcs_pi)
@@ -1142,6 +1256,14 @@ def main():
             row["uncertainty_mcs_nohc_mu"] = uncertainty_mcs_nohc_mu
             row["uncertainty_mcs_nohc_pi"] = uncertainty_mcs_nohc_pi
             row["uncertainty_mcs_nohc_proton"] = uncertainty_mcs_nohc_proton
+            row["divergence_hc_electron"] = divergence_e * 1000
+            row["divergence_hc_muon"] = divergence_mu * 1000
+            row["divergence_hc_pion"] = divergence_pi * 1000
+            row["divergence_hc_proton"] = divergence_proton * 1000
+            row["divergence_nohc_electron"] = divergence_nohc_e * 1000
+            row["divergence_nohc_muon"] = divergence_nohc_mu * 1000
+            row["divergence_nohc_pion"] = divergence_nohc_pi * 1000
+            row["divergence_nohc_proton"] = divergence_nohc_proton * 1000
 
             # Calculate initial sigma from BOTH scintillator-corrected and divergence-corrected values
             # beam spot size corrected for scintillator height
@@ -1327,6 +1449,39 @@ def main():
         plot_y_corrected_estimation=True,
         filename_suffix="_nohc_ycorr_only_unzoomed",
     )
+
+    plot_divergence_data(
+        rows,
+        output_path=args.output,
+        plot_bias_line=True,
+        zoom=True,
+        filename="beam_divergence_vs_momentum_zoomed.png",
+    )
+    plot_divergence_data(
+        rows,
+        output_path=args.output,
+        plot_bias_line=True,
+        zoom=False,
+        filename="beam_divergence_vs_momentum_unzoomed.png",
+    )
+    plot_divergence_data(
+        rows,
+        mcs_correction_mode="with_hc",
+        output_path=args.output,
+        plot_bias_line=True,
+        zoom=False,
+        filename="beam_divergence_vs_momentum_unzoomed_with_hc_corr.png",
+    )
+    plot_divergence_data(
+        rows,
+        mcs_correction_mode="with_hc",
+        output_path=args.output,
+        plot_bias_line=True,
+        zoom=True,
+        filename="beam_divergence_vs_momentum_unzoomed_with_hc_corr_zoomed.png",
+    )
+
+
 
     proton_summary_csv_path = (
         "../../analysis_tools/analysis_examples/run_gaussian_summary.csv"

@@ -177,7 +177,10 @@ class beamline_setup:
                         f"Estimated profile at T1 is {math.sqrt(self.particle.variance_width_cm)}"
                     )
 
-        return self.particle.variance_width_cm
+        return (
+            self.particle.variance_width_cm,
+            self.particle.variance_angle_rad,
+        )
 
 
 if __name__ == "__main__":

@@ -66,9 +66,9 @@ def simulate_mcs(run_number: int, momentum_MeV_c: float) -> float:
     beamline.create_setup(detectors_list)
     _stdout = sys.stdout
     sys.stdout = io.StringIO()
-    variance = beamline.get_final_variance(HC_veto=True)
+    width_variance, _ = beamline.get_final_variance(HC_veto=True)
     sys.stdout = _stdout
-    return math.sqrt(variance)
+    return math.sqrt(width_variance)
 
 
 def subtract_in_quadrature(a: float, b: float) -> Optional[float]:

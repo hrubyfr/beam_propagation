@@ -39,7 +39,7 @@ if __name__ == "__main__":
     particle = beam_setup.particle(name="pion", momentum_MeV_c=momentum)
     Beam.set_particle(particle)
     Beam.create_setup(detectors_list)
-    total_sigma_mcs_squared = Beam.get_final_variance()
+    total_sigma_mcs_squared, _ = Beam.get_final_variance(HC_veto=True)
     total_sigma_mcs = math.sqrt(total_sigma_mcs_squared)
 
     print("=" * 100)
